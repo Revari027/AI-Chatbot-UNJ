@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Chatbot PSTI - Revario</title>
+    <link rel="stylesheet" href="/static/chat.css" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
+</head>
+<body>
+<div class="chat-app">
+    <header class="chat-header">
+        <div class="title">Chatbot PSTI & Konsep Pemrograman</div>
+        <div class="controls">
+            <button id="clearBtn" title="Clear chat">Clear</button>
+            <button id="widgetToggle" title="Toggle widget">Widget</button>
+        </div>
+    </header>
+
+    <main id="chatBox" class="chat-box" aria-live="polite"></main>
+
+    <div class="composer">
+        <textarea id="msg" placeholder="Tanya materi PSTI / Konsep Pemrograman..." rows="1"></textarea>
+        <div class="composer-actions">
+            <button id="sendBtn">Kirim</button>
+        </div>
+    </div>
+
+    <div id="typingIndicator" class="typing" hidden>
+        <div class="dot dot1"></div><div class="dot dot2"></div><div class="dot dot3"></div>
+    </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script>
+const chatBox = document.getElementById("chatBox");
+const msgInput = document.getElementById("msg");
+const sendBtn = document.getElementById("sendBtn");
+const clearBtn = document.getElementById("clearBtn");
+const typingIndicator = document.getElementById("typingIndicator");
+const widgetToggle = document.getElementById("widgetToggle");
+
+function escapeHtml(s){
+    return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+function sanitizeAI(text){
+    // Bold markdown **text**
+    text = text.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+
+    // Italic markdown *text*
+    text = text.replace(/\*(.*?)\*/g, "<em>$1</em>");
+
+    // Inline code `text`
+    text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
+
+    // Allowed HTML tags only
+    text = text.replace(/<(?!\/?(b|strong|i|em|code)\b)[^>]*>/gi, "");
+
+    return text;
+}
+
+
+function parseSegments(text){
+    const segments = [];
+    let lastIndex = 0;
+    const regex = /```(\w+)?\n([\s\S]*?)```/g;
+    let m;
+    while ((m = regex.exec(text)) !== null){
+        if (m.index > lastIndex){
+            segments.push({type:"text", content: text.slice(lastIndex, m.index)});
+        }
+        segments.push({type:"code", lang: m[1] || "plaintext", content: m[2]});
+        lastIndex = regex.lastIndex;
+    }
+    if (lastIndex < text.length){
+        segments.push({type:"text", content: text.slice(lastIndex)});
+    }
+    return segments;
+}
+
+function appendUserBubble(text){
+    const d = document.createElement("div");
+    d.className = "bubble user";
+    d.textContent = text;
+    chatBox.appendChild(d);
+    chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+function appendAIBubbleWithTyping(aiText){
+    typingIndicator.hidden = false;
+    const container = document.createElement("div");
+    container.className = "bubble ai";
+    chatBox.appendChild(container);
+    chatBox.scrollTop = chatBox.scrollHeight;
+
+    const segments = parseSegments(aiText);
+
+    (async function renderSegments(){
+        for (const seg of segments){
+            if (seg.type === "text"){
+                const p = document.createElement("div");
+                container.appendChild(p);
+                await typeTextIntoElement(seg.content, p);
+            } else {
+                const pre = document.createElement("pre");
+                const code = document.createElement("code");
+                code.className = `language-${seg.lang}`;
+                code.textContent = seg.content;
+                pre.appendChild(code);
+                container.appendChild(pre);
+                Prism.highlightElement(code);
+                await pause(250); // small pause after inserting code block
+            }
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+        typingIndicator.hidden = true;
+    })();
+}
+
+function pause(ms){ return new Promise(r=>setTimeout(r, ms)); }
+
+async function typeTextIntoElement(text, el){
+    // Convert markdown into safe HTML
+    const html = sanitizeAI(text);
+
+    // Temporary container to expand HTML into nodes
+    const temp = document.createElement("div");
+    temp.innerHTML = html;
+
+    for (const node of temp.childNodes) {
+        const cloned = node.cloneNode(true);
+        el.appendChild(cloned);
+
+        // Typewriter effect for pure text nodes
+        if (cloned.nodeType === 3) {  // text node
+            const chars = cloned.textContent.split("");
+            cloned.textContent = "";
+            for (let c of chars) {
+                cloned.textContent += c;
+                await pause(10 + Math.random()*25);
+            }
+        }
+        await pause(50);
+    }
+}
+
+
+async function sendMessage(){
+    const text = msgInput.value.trim();
+    if (!text) return;
+    appendUserBubble(text);
+    msgInput.value = "";
+    showTyping(true);
+    try {
+        const resp = await fetch("/send", {
+            method: "POST",
+            body: new URLSearchParams({message: text}),
+            headers: {"Content-Type":"application/x-www-form-urlencoded"}
+        });
+        const data = await resp.json();
+        showTyping(false);
+        if (data.reply){
+            appendAIBubbleWithTyping(data.reply);
+        } else {
+            appendAIBubbleWithTyping("AI tidak merespon.");
+        }
+    } catch (err){
+        showTyping(false);
+        appendAIBubbleWithTyping("Terjadi error saat menghubungi server.");
+    }
+}
+
+function showTyping(on){
+    typingIndicator.hidden = !on;
+}
+
+sendBtn.addEventListener("click", sendMessage);
+msgInput.addEventListener("keydown", (e)=>{
+    if (e.key === "Enter" && !e.shiftKey){
+        e.preventDefault();
+        sendMessage();
+    }
+});
+
+clearBtn.addEventListener("click", async ()=>{
+    await fetch("/clear", {method:"POST"});
+    chatBox.innerHTML = "";
+});
+
+widgetToggle.addEventListener("click", ()=>{
+    document.querySelector(".chat-app").classList.toggle("mini");
+});
+
+window.addEventListener("load", async ()=>{
+    try {
+        const res = await fetch("/history");
+        const j = await res.json();
+        if (j.history && j.history.length){
+            for (const item of j.history){
+                if (item.role === "user"){
+                    appendUserBubble(item.content);
+                } else {
+                    // insert AI replies directly (no typing for history)
+                    const container = document.createElement("div");
+                    container.className = "bubble ai";
+                    const segments = parseSegments(item.content);
+                    for (const seg of segments){
+                        if (seg.type === "text"){
+                            const t = document.createElement("div");
+                            t.textContent = seg.content;
+                            container.appendChild(t);
+                        } else {
+                            const pre = document.createElement("pre");
+                            const code = document.createElement("code");
+                            code.className = `language-${seg.lang}`;
+                            code.textContent = seg.content;
+                            pre.appendChild(code);
+                            container.appendChild(pre);
+                            Prism.highlightElement(code);
+                        }
+                    }
+                    chatBox.appendChild(container);
+                }
+            }
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+    } catch(e){}
+});
+</script>
+</body>
+</html>
